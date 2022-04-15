@@ -15,10 +15,8 @@ np.set_printoptions(precision=4,suppress=True)# display numbers with 4 sig. figu
 
                          ## User Input ##
 
-dir = '/Users/coreyraemcrae/Documents/Rigetti_miscdata/StubDataTransposed' #make sure to use / instead of \
-
-dir_output = '/Users/coreyraemcrae/Documents/Rigetti_fits/StubDataTransposed'
-
+dir = '/Users/coreyraemcrae/OneDrive/OneDrive - UCB-O365/GoldDR_data/Nb01_01/cooldown16/6p7035214GHz_VLPsweep_202102020_17_19_34' #make sure to use / instead of \
+dir_output = '/Users/coreyraemcrae/Documents/GoldDR_fits/Nb01_01/cooldown16/6p7035214GHz_VLPsweep_202102020_17_19_34/'
 
                          ## End User Input ##
 
@@ -28,18 +26,28 @@ if not os.path.exists(dir_output):
 os.chdir(dir)
 names = []
 for file in glob.glob("*.csv"):
-    if not file = 'conditions.csv'
+    if file != 'conditions.csv':
         names.append(file)
+names.sort()
 
 Qi_values = []
 Qi_conf = []
 Qc_values = []
 Qc_conf = []
+power_values = []
 
 for i in names:
     filename = i
     filepath = dir+'/'+filename
-    print(filepath)
+    print(filename)
+
+    currentpower = filename[:filename.index("dB")]
+    currentpower = currentpower.replace('p','.')
+    for i in range(1, 5, 1):
+        currentpower = currentpower[currentpower.index("_"):]
+        currentpower = currentpower[1:]
+
+    power_values.append(currentpower)
 
     #path_to_background = dir+'/'+'Nb_R4_baseline_-50.0dBm_2000mK.csv'
 
@@ -79,8 +87,11 @@ for i in names:
     #params1,fig1,chi1,init1 = Fit_Resonator(filename,filepath,Method,normalize,dir,path_to_background)
     ###############################################
 
-file = open(dir + "/power_sweep_params.csv","w")
+
+
+file = open(dir_output + "/power_sweep_params.csv","w")
 count = 0
+file.write('Power (dB)'+ ','+'Qi' + ',' + 'Qi_conf' + ',' + 'Qc' + ',' + 'Qc_conf[count]' + '\n')
 for i in Qi_values:
-    file.write(str(i) + ',' + str(Qi_conf[count]) + ',' + str(Qc_values[count]) + ',' + str(Qc_conf[count]) + '\n')
+    file.write(str(power_values[count]) + ',' + str(i) + ',' + str(Qi_conf[count]) + ',' + str(Qc_values[count]) + ',' + str(Qc_conf[count]) + '\n')
     count = count + 1

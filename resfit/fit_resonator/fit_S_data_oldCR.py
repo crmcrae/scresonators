@@ -15,13 +15,6 @@ from scipy import stats
 import time
 import sys
 import os
-import skrf as rf
-
-import logging
-import scipy.optimize as spopt
-from scipy.interpolate import splrep, splev
-from scipy.ndimage.filters import gaussian_filter1d
-
 pathToParent = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) #set a variable that equals the relative path of parent directory
 sys.path.append(pathToParent)#path to Fit_Cavity
 
@@ -69,7 +62,7 @@ def extract_near_res(x_raw: np.ndarray,
     y_temp = []
     # xdata is new set of data to be fit, within extract_factor times the bandwidth, ydata is S21 data to match indices with xdata
     for i, freq in enumerate(x_raw):
-        if (freq > xstart and freq < xend):
+        if (freq > xstart and freq< xend):
             x_temp.append(freq)
             y_temp.append(y_raw[i])
 
@@ -984,217 +977,11 @@ class ComplexData:
 
 
 
-def phase_centered(f, fr, Ql, theta, delay=0.):
-        """
-        Yields the phase response of a strongly overcoupled (Qi >> Qc) resonator
-        in reflection which corresponds to a circle centered around the origin.
-        Additionally, a linear background slope is accounted for if needed.
-
-        inputs:
-        - fr: Resonance frequency
-        - Ql: Loaded quality factor (and since Qi >> Qc also Ql = Qc)
-        - theta: Offset phase
-        - delay (opt.): Time delay between output and input signal leading to
-                        linearly frequency dependent phase shift
-        """
-        return theta - 2*np.pi*delay*(f-fr) + 2.*np.arctan(2.*Ql*(1. - f/fr))
-
-def phase_dist(angle):
-        """
-        Maps angle [-2pi, +2pi] to phase distance on circle [0, pi]
-        """
-        return np.pi - np.abs(np.pi - np.abs(angle))
-
-def fit_phase(f_data, z_data, guesses=None):
-        """
-        Fits the phase response of a strongly overcoupled (Qi >> Qc) resonator
-        in reflection which corresponds to a circle centered around the origin
-        (cf‌. phase_centered()).
-
-        inputs:
-        - z_data: Scattering data of which the phase should be fit. Data must be
-                  distributed around origin ("circle-like").
-        - guesses (opt.): If not given, initial guesses for the fit parameters
-                          will be determined. If given, should contain useful
-                          guesses for fit parameters as a tuple (fr, Ql, delay)
-
-        outputs:
-        - fr: Resonance frequency
-        - Ql: Loaded quality factor
-        - theta: Offset phase
-        - delay: Time delay between output and input signal leading to linearly
-                 frequency dependent phase shift
-        """
-        phase = np.unwrap(np.angle(z_data))
-
-        # For centered circle roll-off should be close to 2pi. If not warn user.
-        if np.max(phase) - np.min(phase) <= 0.8*2*np.pi:
-            logging.warning(
-                "Data does not cover a full circle (only {:.1f}".format(
-                    np.max(phase) - np.min(phase)
-                )
-               +" rad). Increase the frequency span around the resonance?"
-            )
-            roll_off = np.max(phase) - np.min(phase)
-        else:
-            roll_off = 2*np.pi
-
-        # Set useful starting parameters
-        if guesses is None:
-            # Use maximum of derivative of phase as guess for fr
-            phase_smooth = gaussian_filter1d(phase, 30)
-            phase_derivative = np.gradient(phase_smooth)
-            fr_guess = f_data[np.argmax(np.abs(phase_derivative))]
-            Ql_guess = 2*fr_guess / (f_data[-1] - f_data[0])
-            # Estimate delay from background slope of phase (substract roll-off)
-            slope = phase[-1] - phase[0] + roll_off
-            delay_guess = -slope / (2*np.pi*(f_data[-1]-f_data[0]))
-        else:
-            fr_guess, Ql_guess, delay_guess = guesses
-        # This one seems stable and we do not need a manual guess for it
-        theta_guess = 0.5*(np.mean(phase[:5]) + np.mean(phase[-5:]))
-
-        # Fit model with less parameters first to improve stability of fit
-
-        def residuals_Ql(params):
-            Ql, = params
-            return residuals_full((fr_guess, Ql, theta_guess, delay_guess))
-        def residuals_fr_theta(params):
-            fr, theta = params
-            return residuals_full((fr, Ql_guess, theta, delay_guess))
-        def residuals_delay(params):
-            delay, = params
-            return residuals_full((fr_guess, Ql_guess, theta_guess, delay))
-        def residuals_fr_Ql(params):
-            fr, Ql = params
-            return residuals_full((fr, Ql, theta_guess, delay_guess))
-        def residuals_full(params):
-            return phase_dist(
-                phase - phase_centered(f_data, *params)
-            )
-
-        p_final = spopt.leastsq(residuals_Ql, [Ql_guess])
-        Ql_guess, = p_final[0]
-        p_final = spopt.leastsq(residuals_fr_theta, [fr_guess, theta_guess])
-        fr_guess, theta_guess = p_final[0]
-        p_final = spopt.leastsq(residuals_delay, [delay_guess])
-        delay_guess, = p_final[0]
-        p_final = spopt.leastsq(residuals_fr_Ql, [fr_guess, Ql_guess])
-        fr_guess, Ql_guess = p_final[0]
-        p_final = spopt.leastsq(residuals_full, [
-            fr_guess, Ql_guess, theta_guess, delay_guess
-        ])
-
-        return p_final[0]
-
-
-def fit_delay(xdata: np.ndarray, ydata: np.ndarray):
-        """
-        Finds the cable delay by repeatedly centering the "circle" and fitting
-        the slope of the phase response.
-        """
-
-        # Translate data to origin
-        xc, yc, r0 = find_circle(np.real(ydata),np.imag(ydata))
-        z_data = ydata - np.complex(xc, yc)
-        # Find first estimate of parameters
-        fr, Ql, theta, delay = fit_phase(xdata, z_data)
-
-        # Do not overreact (see end of for loop)
-        delay *= 0.05
-
-        # Iterate to improve result for delay
-        for i in range(5):
-            # Translate new best fit data to origin
-            z_data = ydata * np.exp(2j*np.pi*delay*xdata)
-            xc, yc, r0 = find_circle(np.real(z_data),np.imag(z_data))
-            z_data -= np.complex(xc, yc)
-
-            # Find correction to current delay
-            guesses = (fr, Ql, 5e-11)
-            fr, Ql, theta, delay_corr = fit_phase(xdata, z_data, guesses)
-
-            # Stop if correction would be smaller than "measurable"
-            phase_fit = phase_centered(xdata, fr, Ql, theta, delay_corr)
-            residuals = np.unwrap(np.angle(z_data)) - phase_fit
-            if 2*np.pi*(xdata[-1]-xdata[0])*delay_corr <= np.std(residuals):
-                break
-
-            # Avoid overcorrection that makes procedure switch between positive
-            # and negative delays
-            if delay_corr*delay < 0: # different sign -> be careful
-                if abs(delay_corr) > abs(delay):
-                    delay *= 0.5
-                else:
-                    # delay += 0.1*delay_corr
-                    delay += 0.1*np.sign(delay_corr)*5e-11
-            else: # same direction -> can converge faster
-                if abs(delay_corr) >= 1e-8:
-                    delay += min(delay_corr, delay)
-                elif abs(delay_corr) >= 1e-9:
-                    delay *= 1.1
-                else:
-                    delay += delay_corr
-
-        if 2*np.pi*(xdata[-1]-xdata[0])*delay_corr > np.std(residuals):
-            logging.warning(
-                "Delay could not be fit properly!"
-            )
-
-        return delay
-
-
-def periodic_boundary(angle):
-        """
-        Maps arbitrary angle to interval [-np.pi, np.pi)
-        """
-        return (angle + np.pi) % (2*np.pi) - np.pi
-
-
-def calibrate(x_data: np.ndarray, z_data: np.ndarray):
-        """
-        Finds the parameters for normalization of the scattering data. See
-        Sij of port classes for explanation of parameters.
-        """
-
-        # Translate circle to origin
-        xc, yc, r = find_circle(np.real(z_data), np.imag(z_data))
-        zc = np.complex(xc, yc)
-        z_data2 = z_data - zc
-
-        # Find off-resonant point by fitting offset phase
-        # (centered circle corresponds to lossless resonator in reflection)
-        fr, Ql, theta, delay_remaining = fit_phase(x_data, z_data2)
-        theta_interval = periodic_boundary(theta)
-        beta = periodic_boundary(theta - np.pi)
-        offrespoint = zc + r*np.cos(beta) + 1j*r*np.sin(beta)
-        a = np.absolute(offrespoint)
-        alpha = np.angle(offrespoint)
-        phi = periodic_boundary(beta - alpha)
-
-        # Store radius for later calculation
-        r /= a
-
-        return delay_remaining, a, alpha, theta, phi, fr, Ql
-
-
-def normalize(f_data, z_data, delay, a, alpha):
-        """
-        Transforms scattering data into canonical position with off-resonant
-        point at (1, 0) (does not correct for rotation phi of circle around
-        off-resonant point).
-        """
-        z_norm = (z_data / a) * np.exp(
-            1j*(-alpha)
-        )
-        '''z_norm = z_data / a * np.exp(
-            1j*(-alpha + 2.*np.pi*delay*f_data)
-        )'''
-
-        return z_norm
-
-
-def preprocess_linear(xdata: np.ndarray, ydata: np.ndarray, normalize: int, output_path: str, plot_extra):
+def preprocess(xdata: np.ndarray, 
+                ydata: np.ndarray, 
+                normalize: int, 
+                output_path: str, 
+                plot_extra):
     """
     Data Preprocessing. Get rid of cable delay and normalize phase/magnitude of S21 by linear fit of normalize # of endpoints
     """
@@ -1205,9 +992,8 @@ def preprocess_linear(xdata: np.ndarray, ydata: np.ndarray, normalize: int, outp
         print("Not enough points to normalize, please lower value of normalize variable or take more points near resonance")
         quit()
     #normalize phase of S21 using linear fit
-    phase = np.unwrap(np.angle(ydata))
-    slope, intercept, r_value, p_value, std_err = stats.linregress(np.append(xdata[0:normalize],xdata[-normalize:]),np.append(phase[0:normalize],phase[-normalize:]))
-    angle = np.subtract(phase,slope*xdata) #remove cable delay
+    slope, intercept, r_value, p_value, std_err = stats.linregress(np.append(xdata[0:normalize],xdata[-normalize:]),np.append(np.angle(ydata[0:normalize]),np.angle(ydata[-normalize:])))
+    angle = np.subtract(np.angle(ydata),slope*xdata) #remove cable delay
     y_test = np.multiply(np.abs(ydata),np.exp(1j*angle))
     if plot_extra:
         plot(np.real(y_test),np.imag(y_test),"Normalize_2",output_path)
@@ -1229,31 +1015,11 @@ def preprocess_linear(xdata: np.ndarray, ydata: np.ndarray, normalize: int, outp
 
     return preprocessed_data, slope, intercept, slope2, intercept2
 
-def preprocess_circle(xdata: np.ndarray, ydata: np.ndarray, output_path: str, plot_extra):
-    """
-    Data Preprocessing. Use Probst method to get rid of cable delay and normalize phase/magnitude of S21 by circle fit
-    """
 
-    if plot_extra:
-        plot(np.real(ydata),np.imag(ydata),"Normalize_1",output_path)
 
-    #remove cable delay
-    delay = fit_delay(xdata, ydata)
-    z_data = ydata * np.exp(2j*np.pi*delay*xdata)
-
-    if plot_extra:
-        plot(np.real(z_data),np.imag(z_data),"Normalize_2",output_path)
-
-    #calibrate and normalize
-    delay_remaining, a, alpha, theta, phi, fr, Ql = calibrate(xdata, z_data)
-    z_norm = normalize(xdata, z_data, delay_remaining, a, alpha)
-
-    if plot_extra:
-        plot(np.real(z_norm),np.imag(z_norm),"Normalize_3",output_path)
-
-    return z_norm
-
-def background_removal(databg: VNASweep, linear_amps: np.ndarray, phases: np.ndarray, output_path: str):
+def background_removal(databg: VNASweep, 
+                        linear_amps: np.ndarray, 
+                        phases: np.ndarray):
     x_bg = databg.freqs
     linear_amps_bg = databg.linear_amps
     phases_bg = databg.phases
@@ -1263,13 +1029,14 @@ def background_removal(databg: VNASweep, linear_amps: np.ndarray, phases: np.nda
     fmag = interp1d(x_bg, linear_amps_bg, kind='cubic')
     fang = interp1d(x_bg, phases_bg, kind='cubic')
 
-    plot2(databg.freqs,databg.linear_amps,x_bg,linear_amps_bg,"VS_mag",output_path)
-    plot2(databg.freqs,databg.phases,x_bg,phases_bg,"VS_ang",output_path)
+    plot2(xdata,linear_amps,x_bg,linear_amps_bg,"VS_mag",output_path)
+    plot2(xdata,phases,x_bg,phases_bg,"VS_ang",output_path)
 
     linear_amps = np.divide(linear_amps,linear_amps_bg)
     phases = np.subtract(phases,phases_bg)
 
     return np.multiply(linear_amps,np.exp(1j*phases))
+
 
 #Fit data to least squares fit for respective fit type
 def min_fit(params,xdata,ydata,Method):
@@ -1300,13 +1067,7 @@ def min_fit(params,xdata,ydata,Method):
         parameter = fit_params.valuesdict()
         #extracts the actual value for each parameter and puts it in the fit_params list
         fit_params = [value for _,value in parameter.items()]
-    except:
-        print(">Failed to minimize data for least squares fit")
-        print(">Confidence intervals unknown and given as 0.0")
-        fit_params = None
-        conf_array = [0,0,0,0,0,0]
-        return fit_params, conf_array
-    try:
+
         if Method.method == 'DCM' or Method.method == 'PHI' or Method.method == 'DCM REFLECTION':
             ci = lmfit.conf_interval(minner, result, p_names=['Q','Qc','phi','w1'], sigmas=[2])
             #confidence interval for Q
@@ -1369,21 +1130,21 @@ def min_fit(params,xdata,ydata,Method):
             w1_conf = max(np.abs(ci['w1'][1][1]-ci['w1'][0][1]),np.abs(ci['w1'][1][1]-ci['w1'][2][1]))
             #Array of confidence intervals
             conf_array = [Qi_conf,Qc_conf,Qa_conf,w1_conf]
+
+        return fit_params, conf_array
     except:
-        print(">Failed to find confidence intervals for least squares fit")
-        conf_array = [0,0,0,0,0,0]
-    return fit_params, conf_array
+        print(">Failed to minimize function for least squares fit")
+        quit()
 
 
 def fit_resonator(filename: str,
                   Method,
                   normalize: int,
-                  dir: str = None,
-                  data_array: np.ndarray = None,
-                  background: str = None,
-                  background_array: np.ndarray = None,
+                  dir: str = None, 
+                  data_array: np.ndarray = None, 
+                  background: str = None, 
+                  background_array: np.ndarray = None, 
                   plot_extra = False,
-                  preprocess_method = "linear",
                   dir_output: str = None):
     """Function to fit resonator data
 
@@ -1427,35 +1188,11 @@ def fit_resonator(filename: str,
         quit()
 
     #make a folder to put all output in
-    result = time.localtime(time.time())
-    output = str(result.tm_year)
-    if len(str(result.tm_mon)) < 2:
-        output = output + '0' + str(result.tm_mon)
-    else:
-        output = output + str(result.tm_mon)
-    if len(str(result.tm_mday)):
-        output = output + '0' + str(result.tm_mday) + '_' + str(result.tm_hour) + '_' + str(result.tm_min) + '_' + str(result.tm_sec)
-    else:
-        output = output + str(result.tm_mday) + '_' + str(result.tm_hour) + '_' + str(result.tm_min) + '_' + str(result.tm_sec)
-    if dir != None:
-        output_path = dir_output + '/' + output + '/'
-    else:
-        output_path = output + '/'
-    count=2
-    path = output_path
-    while os.path.isdir(output_path):
-        output_path=path[0:-1]+'_'+ str(count) +'/'
-        count = count+1
-    os.mkdir(output_path)
+    #output_path = name_folder(dir_output,str(Method.method))
+    #os.mkdir(output_path)
+    output_path = ""
 
-    #original data before normalization
-    x_initial = xdata
-    y_initial = ydata
-    #normalize data
-    slope = 0
-    intercept = 0
-    slope2 = 0
-    intercept2 = 0
+    #remove user background file if present
     if background != None:
         if dir != None:
             filepath = dir+'/'+background
@@ -1463,33 +1200,21 @@ def fit_resonator(filename: str,
             print("Directory for background file not speficied")
             quit()
         databg = VNASweep.from_file(filepath)
-        ydata = background_removal(databg, linear_amps, phases,output_path)
+        ydata = background_removal(databg, linear_amps, phases)
     elif background_array != None:
         databg = VNASweep.from_columns(freqs=background_array.T[0], amps=background_array.T[1], phases=background_array.T[2])
-        ydata = background_removal(databg, linear_amps, phases,output_path)
-    elif preprocess_method == "linear":
-        ydata, slope, intercept, slope2, intercept2 = preprocess_linear(xdata, ydata, normalize, output_path, plot_extra)
-    elif preprocess_method == "circle":
-        ydata = preprocess_circle(xdata, ydata, output_path, plot_extra)
+        ydata = background_removal(databg, linear_amps, phases)
+    #original data before normalization
+    x_initial = xdata
+    y_initial = ydata
+    ydata, slope, intercept, slope2, intercept2 = preprocess(xdata, ydata, normalize, output_path, plot_extra)
     #a copy of data before modification for plotting
     y_raw = ydata
     x_raw = xdata
 
     #Init function variables
     manual_init = Method.manual_init
-    change_Q, change_Qi, change_Qc, change_w1, change_phi, change_Qa = True, True, True, True, True, True
-    if 'Q' in Method.MC_fix:
-        change_Q = False
-    if 'Qi' in Method.MC_fix:
-        change_Qi = False
-    if 'Qc' in Method.MC_fix:
-        change_Qc = False
-    if 'w1' in Method.MC_fix:
-        change_w1 = False
-    if 'phi' in Method.MC_fix:
-        change_phi = False
-    if 'Qa' in Method.MC_fix:
-        change_Qa = False
+    vary = Method.vary
     y1data = np.real(ydata)
     y2data = np.imag(ydata)
 
@@ -1507,22 +1232,11 @@ def fit_resonator(filename: str,
             if len(manual_init)==4:
 
                 #bandwidth for frequency values
-                print(f'init: {init}')
-
-                # FIXME: This is a bug in the manual_init != None case
-                #        It will result in a divide by zero exception, printed
-                #        below by the try - except block
-                #        Solution is to move kappa into if
-                # kappa = init[2] / (init[0])
+                kappa = init[2]/(init[0])
 
                 #If method is DCM or PHI, set parameter 1 equal to Q which is 1/(1/Qi + 1/Qc) aka. convert from Qi
                 if Method.method == 'DCM' or Method.method == "DCM REFLECTION" or Method.method == 'PHI':
-                    Qc = manual_init[1]/np.exp(1j*manual_init[3])
-                    if Method.method == 'PHI':
-                        manual_init[0] = 1/(1/manual_init[0] + np.abs(1/Qc))
-                    else:
-                        manual_init[0] = 1/(1/manual_init[0] + np.real(1/Qc))
-                    kappa = manual_init[2] / manual_init[0]
+                    manual_init[0] = 1/(1/manual_init[0] + 1/manual_init[1])
                 elif Method.method == 'CPZM':
                     Q = 1/(1/manual_init[0] + 1/manual_init[1])
                     kappa = manual_init[2]/Q
@@ -1539,9 +1253,7 @@ def fit_resonator(filename: str,
                 print(manual_init)
                 print(">Manual input wrong format, please follow the correct format of 4 parameters in an array")
                 quit()
-        except Exception as exp:
-            print(">Expection caught: ", exp)
-            print(">Loaded manual_init: ", manual_init)
+        except:
             print(">Problem loading manually initialized parameters, please make sure parameters are all numbers")
             quit()
     else:
@@ -1570,27 +1282,21 @@ def fit_resonator(filename: str,
         #initialize parameter class, min is lower bound, max is upper bound, vary = boolean to determine if parameter varies during fit
         params = lmfit.Parameters()
         if Method.method == 'DCM' or Method.method == 'DCM REFLECTION' or Method.method == 'PHI':
-            params.add('Q', value=init[0],vary = change_Q,min = init[0]*0.5, max = init[0]*1.5)
+            params.add('Q', value=init[0],vary = vary[0],min = init[0]*0.5, max = init[0]*1.5)
         elif Method.method == 'INV' or Method.method == 'CPZM':
-            params.add('Qi', value=init[0],vary = change_Qi,min = init[0]*0.8, max = init[0]*1.2)
-        params.add('Qc', value=init[1],vary = change_Qc,min = init[1]*0.8, max = init[1]*1.2)
-        params.add('w1', value=init[2],vary = change_w1,min = init[2]*0.9, max = init[2]*1.1)
+            params.add('Qi', value=init[0],vary = vary[0],min = init[0]*0.8, max = init[0]*1.2)
+        params.add('Qc', value=init[1],vary = vary[1],min = init[1]*0.8, max = init[1]*1.2)
+        params.add('w1', value=init[2],vary = vary[2],min = init[2]*0.9, max = init[2]*1.1)
         if Method.method == 'CPZM':
-            params.add('Qa', value=init[3], vary = change_Qa , min = -init[3]*1.1,max = init[3]*1.1)
+            params.add('Qa', value=init[3], vary = vary[3] , min = -init[3]*1.1,max = init[3]*1.1)
         else:
-            params.add('phi', value=init[3], vary = change_phi , min = -np.pi,max = np.pi)
+            params.add('phi', value=init[3], vary = vary[3] , min = -np.pi,max = np.pi)
     except:
         print(">Failed to define parameters, please make sure parameters are of correct format")
         quit()
 
     #Fit data to least squares fit for respective fit type
     fit_params,conf_array = min_fit(params,xdata,ydata,Method)
-
-    if manual_init == None and fit_params == None:
-        print(">Failed to minimize function for least squares fit")
-        quit()
-    if fit_params == None:
-        fit_params = manual_init
 
     #setup for while loop
     MC_counts = 0
@@ -1621,22 +1327,16 @@ def fit_resonator(filename: str,
     if output_params[0] != fit_params[0]:
         params2 = lmfit.Parameters() #initialize parameter class, min is lower bound, max is upper bound, vary = boolean to determine if parameter varies during fit
         if Method.method == 'DCM' or Method.method == 'DCM REFLECTION' or Method.method == 'PHI':
-            params2.add('Q', value=output_params[0],vary = change_Q,min = output_params[0]*0.5, max = output_params[0]*1.5)
+            params2.add('Q', value=output_params[0],vary = vary[0],min = output_params[0]*0.5, max = output_params[0]*1.5)
         elif Method.method == 'INV' or Method.method == 'CPZM':
-            params2.add('Qi', value=output_params[0],vary = change_Qi,min = output_params[0]*0.8, max = output_params[0]*1.2)
-        params2.add('Qc', value=output_params[1],vary = change_Qc,min = output_params[1]*0.8, max = output_params[1]*1.2)
-        params2.add('w1', value=output_params[2],vary = change_w1,min = output_params[2]*0.9, max = output_params[2]*1.1)
+            params2.add('Qi', value=output_params[0],vary = vary[0],min = output_params[0]*0.8, max = output_params[0]*1.2)
+        params2.add('Qc', value=output_params[1],vary = vary[1],min = output_params[1]*0.8, max = output_params[1]*1.2)
+        params2.add('w1', value=output_params[2],vary = vary[2],min = output_params[2]*0.9, max = output_params[2]*1.1)
         if Method.method == 'CPZM':
-            params2.add('Qa', value=output_params[3], vary = change_Qa , min = output_params[3]*0.9,max = output_params[3]*1.1)
+            params2.add('Qa', value=output_params[3], vary = vary[3] , min = output_params[3]*0.9,max = output_params[3]*1.1)
         else:
-            params2.add('phi', value=output_params[3], vary = change_phi , min = output_params[3]*0.9,max = output_params[3]*1.1)
+            params2.add('phi', value=output_params[3], vary = vary[3] , min = output_params[3]*0.9,max = output_params[3]*1.1)
         output_params,conf_array = min_fit(params2,xdata,ydata,Method)
-
-    if manual_init == None and fit_params == None:
-        print(">Failed to minimize function for least squares fit")
-        quit()
-    if fit_params == None:
-        fit_params = manual_init
 
     #Check that bandwidth is not equal to zero
     if len(xdata) == 0:
@@ -1661,7 +1361,7 @@ def fit_resonator(filename: str,
     if Method.method == 'DCM':
         title = 'DCM fit for ' + filename
         figurename =" DCM with Monte Carlo Fit and Raw data\nPower: " + filename
-        fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_DCM,error,figurename,x_c,y_c,r,output_path,conf_array,extract_factor, \
+        fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_DCM,error,figurename,x_c,y_c,r,dir_output,conf_array,extract_factor, \
         title = title, manual_params = Method.manual_init)
         '''except:
             print(">Failed to plot DCM fit for data")
@@ -1670,7 +1370,7 @@ def fit_resonator(filename: str,
         try:
             title = 'PHI fit for ' + filename
             figurename ="PHI with Monte Carlo Fit and Raw data\nPower: " + filename
-            fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_DCM,error,figurename,x_c,y_c,r,output_path,conf_array,extract_factor, \
+            fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_DCM,error,figurename,x_c,y_c,r,dir_output,conf_array,extract_factor, \
             title = title, manual_params = Method.manual_init)
         except:
             print(">Failed to plot PHI fit for data")
@@ -1679,7 +1379,7 @@ def fit_resonator(filename: str,
         try:
             title = 'DCM REFLECTION fit for ' + filename
             figurename =" DCM REFLECTION with Monte Carlo Fit and Raw data\nPower: " + filename
-            fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_DCM_REFLECTION,error,figurename,x_c,y_c,r,output_path,conf_array,extract_factor, \
+            fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_DCM_REFLECTION,error,figurename,x_c,y_c,r,dir_output ,conf_array,extract_factor, \
             title = title, manual_params = Method.manual_init)
         except:
             print(">Failed to plot DCM fit for data")
@@ -1688,7 +1388,7 @@ def fit_resonator(filename: str,
         try:
             title = 'INV fit for ' + filename
             figurename = " Inverse with MC Fit and Raw data\nPower: " + filename
-            fig = PlotFit(x_raw,1/y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_inverse,error,figurename,x_c,y_c,r,output_path,conf_array,extract_factor, \
+            fig = PlotFit(x_raw,1/y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_inverse,error,figurename,x_c,y_c,r,dir_output ,conf_array,extract_factor, \
             title = title, manual_params = Method.manual_init)
         except:
             print(">Failed to plot INV fit for data")
@@ -1697,13 +1397,14 @@ def fit_resonator(filename: str,
         try:
             title = 'CPZM fit for ' + filename
             figurename = " CPZM with MC Fit and Raw data\nPower: " + filename
-            fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_CPZM,error,figurename,x_c,y_c,r,output_path,conf_array,extract_factor, \
+            fig = PlotFit(x_raw,y_raw,x_initial,y_initial,slope,intercept,slope2,intercept2,output_params,Method,ff.cavity_CPZM,error,figurename,x_c,y_c,r,dir_output,conf_array,extract_factor, \
             title = title, manual_params = Method.manual_init)
         except:
             print(">Failed to plot CPZM fit for data")
             quit()
 
-    fig.savefig(name_plot(filename,str(Method.method),output_path))
+    fig.savefig(name_plot(filename,str(Method.method),dir_output))
+    os.rename(dir_output + "fit_params.csv",name_fit_params(filename,str(Method.method),dir_output))
     return output_params,conf_array,fig,error,init
 
 
@@ -1744,17 +1445,8 @@ def plot2(x,y,x2,y2,name,output_path):
     ax.plot(x2,y2,'bo',label = 'raw data',markersize = 3, color = 'red')
     fig.savefig(output_path+name+'.png')
 
-def name_folder(dir,strmethod):
-    result = time.localtime(time.time())
-    output = strmethod + '_' + str(result.tm_year)
-    if len(str(result.tm_mon)) < 2:
-        output = output + '0' + str(result.tm_mon)
-    else:
-        output = output + str(result.tm_mon)
-    if len(str(result.tm_mday)):
-        output = output + '0' + str(result.tm_mday) + '_' + str(result.tm_hour) + '_' + str(result.tm_min) + '_' + str(result.tm_sec)
-    else:
-        output = output + str(result.tm_mday) + '_' + str(result.tm_hour) + '_' + str(result.tm_min) + '_' + str(result.tm_sec)
+def name_folder(dir: str, strmethod: str):
+    output = time.strftime("%y%m%d_%H_%M_%S", time.localtime())
     if dir != None:
         output_path = dir + '/' + output + '/'
     else:
@@ -1771,3 +1463,10 @@ def name_plot(filename,strmethod,output_path):
         filename = filename[:-4]
     filename = filename.replace('.','p')
     return output_path+strmethod+'_'+filename+'.png'
+
+def name_fit_params(filename,strmethod,output_path):
+    if filename.endswith('.csv'):
+        filename = filename[:-4]
+    filename = filename.replace('.','p')
+    return output_path+'fit_params_'+strmethod+'_'+filename+'.csv'
+    

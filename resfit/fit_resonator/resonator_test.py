@@ -27,3 +27,4 @@ def test_fit_method():
                manual_init=manual_init,
                MC_step_const=0.3)
     assert fit_method
+    

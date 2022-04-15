@@ -67,5 +67,3 @@ def test_extract_near_res():
     with pytest.raises(Exception):
         f_res = 3.55
         fsd.extract_near_res(freqs, amps, f_res, kappa)
-
-

@@ -1,8 +1,8 @@
 import numpy as np
 
 #set file location
-dir = "Your path to file here" #path to directory with data, make sure to use /
-filename = "Your file name here"
+dir = "/Users/coreyraemcrae/Documents/Rigetti_miscdata/RF_stub_March2022/" #path to directory with data, make sure to use /
+filename = "0.067in.csv"
 filepath = dir+"/"+filename
 
 #read in file

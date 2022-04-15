@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd #speadsheet commands
 import sys #update paths
 import os #import os in order to find relative path
+import glob
 
 from matplotlib.gridspec import GridSpec
 from scipy.interpolate import interp1d
@@ -12,13 +13,14 @@ import fit_resonator.resonator as res
 import fit_resonator.fit_S_data as fsd
 np.set_printoptions(precision=4,suppress=True)# display numbers with 4 sig. figures (digits)
 
-                         ## Code Starts Here ##
+                         ## User Input ##
 
-dir = '/Users/coreyraemcrae/OneDrive/OneDrive - UCB-O365/GoldDR_data/A01_01/cooldown09/5p9306GHz_HPsweep_20200701_9_30_44/' #make sure to use / instead of \
-filename = 'A01_01_5p9306GHz_HPsweep_-5p0dB_12mK.csv'
+dir = '/Users/coreyraemcrae/Documents/Rigetti_miscdata/StubDataTransposed' #make sure to use / instead of \
+filename = 'Cryo10mK_ShortLaunch19929157t.csv'
 
-dir_output = '/Users/coreyraemcrae/Documents/GoldDR_fits'
+dir_output = '/Users/coreyraemcrae/Documents/Rigetti_fits/StubDataTransposed'
 
+                         ## End User Input ##
 #############################################
 ## create Method
 
@@ -41,7 +43,7 @@ except:
 normalize = 10
 
 ### Fit Resonator function without background removal ###
-params,conf_array,fig1,chi1,init1 = fsd.fit_resonator(filename = filename,Method = Method,normalize = normalize,dir = dir, dir_output = dir_output)
+params,conf_array,fig1,chi1,init1 = fsd.fit_resonator(filename = filename,Method = Method,normalize = normalize, preprocess_method = "circle", dir = dir, dir_output = dir_output)
 
 ### Fit Resonator function with background removal ###
 #background_file = 'example_background.csv'
